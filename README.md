@@ -1,8 +1,8 @@
-# Donkey Kong Barrel Blast — GameCube Controller & DK Bongos support
+# Donkey Kong Barrel Blast — Classic Controller, GameCube Controller & DK Bongos support
 
 Gecko codes that let you play the Wii release of **Donkey Kong Barrel Blast**
-(`RDKE01`, USA) with a **GameCube controller** or a set of **DK Bongos** plugged
-into the console's GameCube ports.
+(`RDKE01`, USA) with a **Classic Controller**, a **GameCube controller**, or a set
+of **DK Bongos** plugged into the console's GameCube ports.
 
 The Wii version of Barrel Blast is a motion-controlled game: everything is driven
 by Wii Remote / Nunchuk shake detection, and the game has no GameCube input path
@@ -14,9 +14,39 @@ synthesise the motion the game is looking for from GameCube button and stick sta
 > hardware is implemented, but the console-side behaviour has **not** been fully
 > verified. Jump (the "pull up on both bongos" gesture) is still driven by a
 > placeholder acceleration vector rather than captured real-controller values.
+> Classic Controller support is **buttons only** so far — see below.
 > Treat this as a work in progress, not a finished hack.
 
+## Classic Controller
+
+This is also groundwork toward playing the game on a **Classic Controller**, and
+that part is the least finished.
+
+What works today is the button layer: hook 1 checks the KPAD extension type
+(`cmpwi r4, 2` — Classic Controller) and, when it matches, folds the Classic
+Controller's button word into the Wii Remote button bits (`r7`) the game actually
+reads, before the composing instruction runs:
+
+| Classic Controller | Reported as Wii Remote |
+| --- | --- |
+| A | A |
+| B | B |
+| D-pad Up / Down / Left / Right | D-pad Up / Down / Left / Right |
+| + | + |
+| − | − |
+| HOME | HOME |
+
+That is enough to drive menus and every button-driven part of the game from a
+Classic Controller. What is **not** done is the motion half: a Classic Controller
+has no accelerometer, so there is nothing to derive a drum hit or a jump from, and
+the accelerometer / stick / IR hooks below are currently gated to the GameCube
+path only. Drumming and jumping still need a Wii Remote, a GameCube pad, or
+Bongos. Extending the synthesised-motion logic to trigger off Classic Controller
+buttons is the obvious next step and is not implemented yet.
+
 ## What is mapped
+
+GameCube controller / DK Bongos:
 
 | Physical input | In-game action |
 | --- | --- |
@@ -62,7 +92,7 @@ The game links an older Wii SDK where the button state is composed inside
 
 | Hook | Address | Notes |
 | --- | --- | --- |
-| Button compose | `0x80248090` | `andi. r0, r7, 0x9fff`; `r7` = Wii Remote buttons, `r27` = channel |
+| Button compose | `0x80248090` | `andi. r0, r7, 0x9fff`; `r7` = Wii Remote buttons, `r27` = channel. Both the Classic Controller remap and the GameCube button injection run here. |
 | Nunchuk stick read | return `0x8024791c` | `r30` = channel base + 0x60; `r12` holds a converter pointer that **must** be preserved |
 | Accelerometer read | return `0x80246588` | `r30` = channel base |
 | DPD / IR read | `0x802470c0`, epilogue hook `0x80247500` | |
@@ -146,6 +176,8 @@ locals. Skipping that corrupts the caller's frame and crashes.
 
 ## Known issues
 
+- Classic Controller support covers buttons only — no drumming and no jump, since
+  the motion-synthesis hooks are still gated to the GameCube path.
 - Jump uses a placeholder acceleration vector; real captured values are needed.
 - 4-player support exists as a variant that round-robins the SI channel each frame,
   but is not included here pending single-player console verification.
