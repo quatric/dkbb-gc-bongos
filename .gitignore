@@ -1,0 +1,4 @@
+*.o
+*.bin
+temp.o
+temp.bin

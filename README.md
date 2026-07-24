@@ -9,10 +9,11 @@ by Wii Remote / Nunchuk shake detection, and the game has no GameCube input path
 at all. These codes hook the KPAD library, poll the Serial Interface directly, and
 synthesise the motion the game is looking for from GameCube button and stick state.
 
-> **⚠️ This project is incomplete.**
-> The codes work in Dolphin, and the Serial Interface polling path needed for real
-> hardware is implemented, but the console-side behaviour has **not** been fully
-> verified. Jump (the "pull up on both bongos" gesture) is still driven by a
+> **⚠️ This project is incomplete — Dolphin only, for now.**
+> These codes are known to work in Dolphin. On real hardware they are expected to
+> do nothing yet: the Serial Interface polling code needed on console is **not
+> included in this build** (see below). Jump (the "pull up on both bongos"
+> gesture) is still driven by a
 > placeholder acceleration vector rather than captured real-controller values.
 > Classic Controller support is **buttons only** so far — see below.
 > Treat this as a work in progress, not a finished hack.
@@ -81,6 +82,14 @@ Load the codes with any Gecko-code loader (Riivolution patch, Gecko OS, a loader
 with cheat support). Only the USA revision (`RDKE01`) is supported — the hook
 addresses are hardcoded and will crash on other regions.
 
+## Sources
+
+`src/` holds the PowerPC assembly and the `build.py` that turns it into Gecko
+codes — but **it does not build the codes shipped here**. It is a later revision
+in which GameCube detection regressed, and it is included only because the
+sources for the working build were lost. Read [`src/README.md`](src/README.md)
+before touching it.
+
 ## How it works
 
 Everything below refers to the USA `main.dol`.
@@ -122,8 +131,14 @@ real hardware `INBUFH` therefore stays empty forever, the validity bit fails, an
 injection is skipped. Dolphin hides this because it fills `INBUFH` itself in
 `UpdateDevices()`.
 
-So a poller runs once per frame at the entry to `KPADiRead` (`0x80247ADC`, which
-runs before all three read hooks, since they are `bl`-called from inside it):
+**This build does not solve that half.** It contains four hooks and no poller —
+the four `C2` codes only ever *read* `INBUFH`. Under Dolphin that is enough,
+because the emulator fills the register for you. On console the register is
+expected to stay empty, the validity check fails, and injection is skipped.
+
+The intended fix, not yet included here, is a fifth code hooking the entry to
+`KPADiRead` (`0x80247ADC`), which runs once per channel per frame before all
+three read hooks, since they are `bl`-called from inside it:
 
 1. Read `SICOMCSR`; bail out if `TSTART` (bit 0) is still set.
 2. Copy the previous response from the I/O buffer (`0x6480`/`0x6484`) into
@@ -131,9 +146,14 @@ runs before all three read hooks, since they are `bl`-called from inside it):
 3. Write poll command `0x40030000` to `0x6480` and kick `SICOMCSR = 0x80030801`
    (channel 0, OUT=3, IN=8, ack `TCINT`, `TSTART`).
 
-`TCINTMSK` and `RDSTINTMSK` are both left clear, so the transfer completes
-silently and the game's own SI interrupt handler never fires. Cost is one frame
-of input latency.
+`TCINTMSK` and `RDSTINTMSK` would both be left clear, so the transfer completes
+silently and the game's own SI interrupt handler never fires. Cost would be one
+frame of input latency.
+
+That approach looks safe on hardware: `SIInit` (`0x801f482c`, called at boot from
+`OSInit`) already issues immediate `SIGetType` probes on all four channels and
+waits on `TSTART` the same way, and it leaves the `SIPOLL` enable bits off, so
+there is no auto-poll to collide with.
 
 ### Input decoding
 
