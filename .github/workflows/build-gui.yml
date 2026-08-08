@@ -1,0 +1,147 @@
+name: Build GUI patcher
+
+on:
+  push: {}
+  workflow_dispatch: {}
+
+# The default GITHUB_TOKEN is read-only on this repo, which makes the
+# release-attach steps fail with "Resource not accessible by integration".
+# Assets on a v* tag need contents: write.
+permissions:
+  contents: write
+
+env:
+  # Wiimms ISO Tool release to bundle. GPLv2; see gpl-2.0.txt inside each archive.
+  WIT_VERSION: v3.05a-r8638
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-universal
+            os: macos-14
+          - target: linux-x86_64
+            os: ubuntu-22.04
+          - target: windows-x86_64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify tkinter is available
+        shell: bash
+        run: |
+          sudo apt-get install -y python3-tk 2>/dev/null || true
+          python -c "import tkinter; print('tkinter ok')"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller tkinterdnd2
+
+      - name: Fetch and stage wit (macOS)
+        if: matrix.target == 'macos-universal'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 "https://wit.wiimm.de/download/wit-${{ env.WIT_VERSION }}-mac.tar.gz" -o wit.tar.gz
+          mkdir wit_pkg && tar -xzf wit.tar.gz -C wit_pkg
+          WITBIN=$(find wit_pkg -type f -path '*/bin/wit')
+          GPL=$(find wit_pkg -type f -name 'gpl-2.0.txt')
+          chmod +x "$WITBIN"
+          mkdir wit_bin && cp "$WITBIN" wit_bin/
+          cp "$GPL" wit-gpl-2.0.txt
+
+      - name: Fetch and stage wit (Linux)
+        if: matrix.target == 'linux-x86_64'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 "https://wit.wiimm.de/download/wit-${{ env.WIT_VERSION }}-x86_64.tar.gz" -o wit.tar.gz
+          mkdir wit_pkg && tar -xzf wit.tar.gz -C wit_pkg
+          WITBIN=$(find wit_pkg -type f -path '*/bin/wit')
+          GPL=$(find wit_pkg -type f -name 'gpl-2.0.txt')
+          chmod +x "$WITBIN"
+          mkdir wit_bin && cp "$WITBIN" wit_bin/
+          cp "$GPL" wit-gpl-2.0.txt
+
+      - name: Fetch and stage wit (Windows / Cygwin)
+        if: matrix.target == 'windows-x86_64'
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 "https://wit.wiimm.de/download/wit-${{ env.WIT_VERSION }}-cygwin64.zip" -o wit.zip
+          unzip -q wit.zip
+          mkdir wit_bin
+          # wit.exe needs its whole cygwin runtime (cygwin1.dll etc) alongside it.
+          cp wit-${{ env.WIT_VERSION }}-cygwin64/bin/*.exe wit-${{ env.WIT_VERSION }}-cygwin64/bin/*.dll wit_bin/
+          cp wit-${{ env.WIT_VERSION }}-cygwin64/gpl-2.0.txt wit-gpl-2.0.txt
+
+      - name: Build app (macOS)
+        if: matrix.target == 'macos-universal'
+        run: |
+          BINS=""
+          for f in wit_bin/*; do BINS="$BINS --add-binary $f:."; done
+          pyinstaller --name DKBB-GC-Bongos-Patcher --windowed --noconfirm \
+            --collect-all tkinterdnd2 \
+            --icon assets/icon.icns --target-architecture universal2 \
+            $BINS --distpath pyinst_dist tools/gui.py
+          cp wit-gpl-2.0.txt "pyinst_dist/DKBB-GC-Bongos-Patcher.app/Contents/Resources/wit-gpl-2.0.txt"
+          cd pyinst_dist
+          zip -qr "../DKBB-GC-Bongos-Patcher-${{ matrix.target }}.zip" DKBB-GC-Bongos-Patcher.app
+
+      - name: Build app (Linux)
+        if: matrix.target == 'linux-x86_64'
+        run: |
+          BINS=""
+          for f in wit_bin/*; do BINS="$BINS --add-binary $f:."; done
+          pyinstaller --name DKBB-GC-Bongos-Patcher --windowed --noconfirm \
+            --collect-all tkinterdnd2 \
+            $BINS --distpath pyinst_dist tools/gui.py
+          cp wit-gpl-2.0.txt pyinst_dist/DKBB-GC-Bongos-Patcher/
+          cd pyinst_dist
+          tar -czf "../DKBB-GC-Bongos-Patcher-${{ matrix.target }}.tar.gz" DKBB-GC-Bongos-Patcher
+
+      - name: Build app (Windows)
+        if: matrix.target == 'windows-x86_64'
+        shell: bash
+        run: |
+          BINS=""
+          for f in wit_bin/*; do BINS="$BINS --add-binary $f;."; done
+          pyinstaller --name DKBB-GC-Bongos-Patcher --windowed --noconfirm \
+            --collect-all tkinterdnd2 \
+            --icon assets/icon.ico \
+            $BINS --distpath pyinst_dist tools/gui.py
+          cp wit-gpl-2.0.txt pyinst_dist/DKBB-GC-Bongos-Patcher/
+          cd pyinst_dist
+          7z a "../DKBB-GC-Bongos-Patcher-${{ matrix.target }}.zip" DKBB-GC-Bongos-Patcher \
+            || powershell -Command "Compress-Archive -Path DKBB-GC-Bongos-Patcher -DestinationPath ../DKBB-GC-Bongos-Patcher-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DKBB-GC-Bongos-Patcher-${{ matrix.target }}
+          path: DKBB-GC-Bongos-Patcher-${{ matrix.target }}.*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DKBB-GC-Bongos-Patcher-${{ matrix.target }}.*
+
+  patch-files:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zip Gecko codes
+        run: zip -qr DKBB-Gecko-Codes.zip codes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DKBB-Gecko-Codes
+          path: DKBB-Gecko-Codes.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DKBB-Gecko-Codes.zip

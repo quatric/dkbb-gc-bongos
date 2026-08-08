@@ -9,14 +9,17 @@ by Wii Remote / Nunchuk shake detection, and the game has no GameCube input path
 at all. These codes hook the KPAD library, poll the Serial Interface directly, and
 synthesise the motion the game is looking for from GameCube button and stick state.
 
-> **⚠️ This project is incomplete — Dolphin only, for now.**
-> These codes are known to work in Dolphin. On real hardware they are expected to
-> do nothing yet: the Serial Interface polling code needed on console is **not
-> included in this build** (see below). Jump (the "pull up on both bongos"
-> gesture) is still driven by a
-> placeholder acceleration vector rather than captured real-controller values.
-> Classic Controller support is **buttons only** so far — see below.
-> Treat this as a work in progress, not a finished hack.
+> **⚠️ Work in progress — console behavior not yet hardware-confirmed.**
+> The four button/motion/stick hooks are known to work in Dolphin. An SI
+> auto-polling hook is now included (see "Reading the GameCube controller"
+> below) that's designed to make the same codes work on real hardware — its
+> hook-installation has been verified in a debugger against a running Dolphin
+> instance, but it has not yet been confirmed on real hardware or observed
+> actually firing mid-gameplay. Use `tools/gui.py` (see "Patcher tool" below)
+> to build a test image. Jump (the "pull up on both bongos" gesture) is still
+> driven by a placeholder acceleration vector rather than captured
+> real-controller values. Classic Controller support is **buttons only** so
+> far — see below. Treat this as a work in progress, not a finished hack.
 
 ## Classic Controller
 
@@ -82,13 +85,38 @@ Load the codes with any Gecko-code loader (Riivolution patch, Gecko OS, a loader
 with cheat support). Only the USA revision (`RDKE01`) is supported — the hook
 addresses are hardcoded and will crash on other regions.
 
+### Patcher tool
+
+`tools/gui.py` bakes the codes directly into a copy of your own dump instead
+of relying on a Gecko loader at runtime — drop a `.wbfs` or `.iso` on the
+window (or a prebuilt binary from a [release](../../releases), which bundles
+[Wiimms ISO Tool](https://wit.wiimm.de/) so you don't need to install it) and
+it patches `sys/main.dol` in place, keeping the original alongside as
+`<name>.bak`. Pick `autopoll` (default) or `stash` from the window before
+dropping the image — see "Reading the GameCube controller" above for what the
+two variants actually do differently.
+
+**The tool never ships or touches anyone else's copy of the game** — it only
+operates on a disc image you already have locally. `tools/build.py` is the
+same patch logic as a standalone module (`static_patches()`/
+`poller_gecko_lines()`) if you'd rather drive it from a script; it checks the
+base DOL against the exact bytes these offsets were computed against before
+writing anything, so a foreign or already-patched dump fails loudly instead
+of silently corrupting.
+
 ## Sources
 
-`src/` holds the PowerPC assembly and the `build.py` that turns it into Gecko
-codes — but **it does not build the codes shipped here**. It is a later revision
-in which GameCube detection regressed, and it is included only because the
-sources for the working build were lost. Read [`src/README.md`](src/README.md)
-before touching it.
+`src/` holds the PowerPC assembly and a `build.py` that turns it into Gecko
+codes — but **it does not build the codeA-D codes shipped here**. It is a
+later revision in which GameCube detection regressed, and it is included only
+because the sources for the working build were lost. Read
+[`src/README.md`](src/README.md) before touching it.
+
+`tools/build.py` is unrelated to `src/build.py` (same filename, different
+directory, different purpose): it's where the fifth code — the SI poller
+described below — is defined, both as Gecko code text and as a direct
+`main.dol` patch. `codeA`-`codeD` are hand-maintained in `codes/RDKE01.ini`
+directly (see the caveat above); only the poller is generated.
 
 ## How it works
 
@@ -131,29 +159,41 @@ real hardware `INBUFH` therefore stays empty forever, the validity bit fails, an
 injection is skipped. Dolphin hides this because it fills `INBUFH` itself in
 `UpdateDevices()`.
 
-**This build does not solve that half.** It contains four hooks and no poller —
-the four `C2` codes only ever *read* `INBUFH`. Under Dolphin that is enough,
-because the emulator fills the register for you. On console the register is
-expected to stay empty, the validity check fails, and injection is skipped.
+The four `C2` codes only ever *read* `INBUFH`/`INBUFL`. Under Dolphin that's
+enough, because the emulator fills those registers itself whenever software
+writes to them. On real hardware it is not: **`SIC0INBUFH`/`SIC0INBUFL` are
+hardware-written auto-poll result registers. Writes to them from software are
+silently ignored on real silicon.** An earlier version of the fifth code tried
+exactly that (copy the I/O buffer response into `INBUFH`/`INBUFL` by hand) —
+it's a no-op on console, which is why "works in Dolphin, does nothing on
+hardware" was the exact symptom this project got stuck on. Dolphin doesn't
+model that restriction, so the divergence only ever showed up on real
+hardware.
 
-The intended fix, not yet included here, is a fifth code hooking the entry to
-`KPADiRead` (`0x80247ADC`), which runs once per channel per frame before all
-three read hooks, since they are `bl`-called from inside it:
+The fifth code included here (`build.py`'s `autopoll` variant, hooking
+`KPADiRead`'s entry at `0x80247ADC`, which runs once per channel per frame
+before all three read hooks since they're `bl`-called from inside it) takes
+the other path instead — it drives the SI hardware's own auto-polling logic
+so the console fills `INBUFH`/`INBUFL` itself, the same way `PADRead` would if
+this game linked the `PAD` library:
 
-1. Read `SICOMCSR`; bail out if `TSTART` (bit 0) is still set.
-2. Copy the previous response from the I/O buffer (`0x6480`/`0x6484`) into
-   `INBUFH`/`INBUFL`.
-3. Write poll command `0x40030000` to `0x6480` and kick `SICOMCSR = 0x80030801`
-   (channel 0, OUT=3, IN=8, ack `TCINT`, `TSTART`).
+1. Write poll command `0x00400300` to `SIC0OUTBUF` (`0x6400`).
+2. Read `SIPOLL` (`0x6430`); `SIInit` already programmed the X (rate) field,
+   so this only needs to force the Y field to 1 poll/frame if it's unset.
+3. OR in `EN0 | VBCPY0` (`0x88`) and write it back to `SIPOLL`.
 
-`TCINTMSK` and `RDSTINTMSK` would both be left clear, so the transfer completes
-silently and the game's own SI interrupt handler never fires. Cost would be one
-frame of input latency.
+That's it — no `SICOMCSR` kick, no `TSTART` polling, no interrupt handling.
+The hardware's own auto-poll state machine (the same one `SIInit`/`SIProbe`
+already exercise for the boot-time `SIGetType` probes) takes it from there
+every VBlank.
 
-That approach looks safe on hardware: `SIInit` (`0x801f482c`, called at boot from
-`OSInit`) already issues immediate `SIGetType` probes on all four channels and
-waits on `TSTART` the same way, and it leaves the `SIPOLL` enable bits off, so
-there is no auto-poll to collide with.
+A second variant (`build.py`'s `stash`) is included as a fallback in case the
+`SIPOLL` enable-bit assumption above turns out wrong on real hardware: it
+issues one SI immediate transfer per frame and stashes the response — read
+from the I/O buffer at `0xCD006480`, which Dolphin and real hardware
+implement identically for immediate transfers — into unused RAM (codeD's own
+leading pad words) instead of trying to write `INBUFH`/`INBUFL`, then
+repoints the four read hooks there. See `tools/gui.py` to try either one.
 
 ### Input decoding
 
@@ -202,7 +242,15 @@ locals. Skipping that corrupts the caller's frame and crashes.
 - 4-player support exists as a variant that round-robins the SI channel each frame,
   but is not included here pending single-player console verification.
 - USA (`RDKE01`) only.
-- Console behaviour is not fully verified.
+- The `autopoll` poller's hook installs correctly and runs without crashing in
+  Dolphin (checked with a GDB-stub debugger against the compiled code, not
+  just read from source), but it has **not** been confirmed to actually fire
+  during gameplay in Dolphin or on real hardware yet, and the `SIPOLL` enable-
+  bit values it writes (`EN0`/`VBCPY0`) are inferred from the documented
+  register layout, not independently confirmed against this game's linked SDK
+  the way the SI base address and register offsets were. If it doesn't work
+  on your console, try the `stash` variant, which sidesteps that assumption
+  entirely.
 
 ## Credits
 

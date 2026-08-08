@@ -2,3 +2,12 @@
 *.bin
 temp.o
 temp.bin
+__pycache__/
+*.pyc
+.DS_Store
+dumps/
+build/
+pyinst_dist/
+*.wbfs
+*.iso
+*.bak
