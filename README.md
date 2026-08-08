@@ -18,18 +18,21 @@ synthesise the motion the game is looking for from GameCube button and stick sta
 > actually firing mid-gameplay. Use `tools/gui.py` (see "Patcher tool" below)
 > to build a test image. Jump (the "pull up on both bongos" gesture) is still
 > driven by a placeholder acceleration vector rather than captured
-> real-controller values. Classic Controller support is **buttons only** so
-> far — see below. Treat this as a work in progress, not a finished hack.
+> real-controller values. Classic Controller support now covers buttons,
+> sticks and drumming, but **none of the Classic Controller path has been
+> run yet** — see "Known issues". Treat this as a work in progress, not a
+> finished hack.
 
 ## Classic Controller
 
-This is also groundwork toward playing the game on a **Classic Controller**, and
-that part is the least finished.
+Every hook now has a Classic Controller path. `tools/ccpatch.py` documents and
+applies the three changes that got it there — read it before touching any of
+this, since it edits the shipped code at the word level (the working sources
+were lost; see [`src/README.md`](src/README.md)).
 
-What works today is the button layer: hook 1 checks the KPAD extension type
-(`cmpwi r4, 2` — Classic Controller) and, when it matches, folds the Classic
-Controller's button word into the Wii Remote button bits (`r7`) the game actually
-reads, before the composing instruction runs:
+**Buttons.** codeA checks the KPAD extension type (`2` = Classic Controller)
+and folds the Classic button word into the Wii Remote button bits (`r7`) the
+game actually reads, before the composing instruction runs:
 
 | Classic Controller | Reported as Wii Remote |
 | --- | --- |
@@ -40,13 +43,41 @@ reads, before the composing instruction runs:
 | − | − |
 | HOME | HOME |
 
-That is enough to drive menus and every button-driven part of the game from a
-Classic Controller. What is **not** done is the motion half: a Classic Controller
-has no accelerometer, so there is nothing to derive a drum hit or a jump from, and
-the accelerometer / stick / IR hooks below are currently gated to the GameCube
-path only. Drumming and jumping still need a Wii Remote, a GameCube pad, or
-Bongos. Extending the synthesised-motion logic to trigger off Classic Controller
-buttons is the obvious next step and is not implemented yet.
+D-pad **Right** never actually worked before: the test was `andis. r0,r9,0x8000`
+(i.e. `r9 & 0x80000000`), but `r9` is the Classic button word loaded by
+`lwz r9,0x60(r31)`, which `KPADiRead` fills from a zero-extended `u16` — bit 31
+is never set. Classic Right is `0x8000`, so the test has to be `andi.`.
+
+**Drumming and jump.** codeB previously had no Classic branch at all. It now
+gets one that synthesises the same two registers its existing GameCube drum
+state machine already consumes — `r6` (the button word, as if it were SI
+`in_hi >> 16`) and `r12` (the analog word, as if it were `in_lo`) — and then
+falls into that shared code untouched. So the edge-trigger, the 4-frame
+oscillation and the "both drums at once = jump" behaviour are all reused
+verbatim rather than reimplemented:
+
+| Classic Controller | In-game action |
+| --- | --- |
+| R or ZR, or the R analog trigger | Right drum |
+| L or ZL, or the L analog trigger | Left drum |
+| both together | Both drums — jump / boost |
+
+The analog triggers are read as normalised floats from KPAD `+0x7c` (L) and
+`+0x80` (R) and rescaled to the 0-255 range the GameCube path expects, so a
+half-pull registers exactly like a GameCube hair-trigger. Those two offsets are
+confirmed from the game's own stick reader (`zz_80247864_`), which fills them
+from raw bytes `+0x34`/`+0x35` scaled between the `nDigitalLRBorder`-style
+bounds.
+
+**Sticks.** codeC's Classic branch was reading the wrong addresses entirely.
+In codeC `r30` is the channel base **+ 0x60** — provable from its own
+channel-detect constants, which compare `r30` against `0x803C9220` /
+`0x803C9C68` / `0x803CA18C`, each exactly `base+0x60` — but the branch was
+written as though `r30` were the bare base. The extension-type probe therefore
+read `base+0xBC` instead of `base+0x5c`, the stick reads hit `base+0xCC`/`0xD0`
+instead of `base+0x6c`/`0x70`, and the float scratch landed at `base+0x168`,
+which is **inside the KPAD sample ring buffer** (it starts at `+0x110`). All of
+it is rebased, and the scratch moved onto codeC's own stack frame.
 
 ## What is mapped
 
@@ -236,11 +267,39 @@ locals. Skipping that corrupts the caller's frame and crashes.
 
 ## Known issues
 
-- Classic Controller support covers buttons only — no drumming and no jump, since
-  the motion-synthesis hooks are still gated to the GameCube path.
+- **The Classic Controller path has never been run** — not on hardware, not
+  even in Dolphin. It is derived statically: every offset it uses is either
+  confirmed from the decompiled game (the `+0x7c`/`+0x80` trigger floats, the
+  `+0x5c` extension type, the `base+0x60` register convention in codeC) or
+  reused unchanged from the already-working GameCube path, and the patched
+  result was disassembled and its control flow checked instruction by
+  instruction. That is not the same as it working. Test before trusting it.
+- One Classic Controller behaviour is known to be wrong by construction: the
+  left drum writes the "nunchuk shake" magnitude at KPAD `+0x74`/`+0x78`,
+  which for a Classic Controller is where codeD reads the **right stick** for
+  the IR pointer. So the pointer will jerk for the ~4 frames of each left-drum
+  hit. Harmless during a race (the pointer is unused there) and you are not
+  drumming in menus, but it is real. Fixing it properly needs codeC to
+  snapshot the right stick before codeB clobbers it.
+- Whether the game's left-drum detection even reads `+0x74`/`+0x78` when the
+  extension is a Classic Controller rather than a Nunchuk is **not confirmed**.
+  The game officially supports neither, and its accelerometer reader
+  (`zz_80245f98_`) skips the nunchuk block unless the extension type is 1
+  (Nunchuk). If the drum detector gates the same way, the left drum will do
+  nothing on a Classic Controller and the fix is a different shape entirely —
+  making the Classic masquerade as a Nunchuk. This is the first thing to check
+  if drumming does not respond.
 - Jump uses a placeholder acceleration vector; real captured values are needed.
+  On a Classic Controller jump is reached by hitting both drums at once, so it
+  inherits that same limitation.
 - 4-player support exists as a variant that round-robins the SI channel each frame,
-  but is not included here pending single-player console verification.
+  but is not included here pending single-player console verification. Note that
+  channel 1 detection is broken in codeB/codeC/codeD regardless: they build the
+  channel-1 base with `ori rX,rX,0x524` where an **add** was meant, and
+  `0x803C91C0 | 0x524` is `0x803C95E4`, not `0x803C96E4`. Channels 0, 2 and 3
+  use correct absolute constants. Channel 3 additionally reaches codeB's shared
+  drum logic by fallthrough rather than through a branch, so it is GameCube-only
+  — the Classic Controller check is not on that path.
 - USA (`RDKE01`) only.
 - The `autopoll` poller's hook installs correctly and runs without crashing in
   Dolphin (checked with a GDB-stub debugger against the compiled code, not
