@@ -11,3 +11,5 @@ pyinst_dist/
 *.wbfs
 *.iso
 *.bak
+hw_test_routine.py
+patch_wbfs.py

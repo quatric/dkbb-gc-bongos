@@ -138,7 +138,7 @@ addresses are hardcoded and will crash on other regions.
 
 ### Patcher tool
 
-`tools/gui.py` bakes the codes directly into a copy of your own dump instead
+`tools/gui.py` bakes the codes directly into a copy of a disc image instead
 of relying on a Gecko loader at runtime — drop a `.wbfs` or `.iso` on the
 window (or a prebuilt binary from a [release](../../releases), which bundles
 [Wiimms ISO Tool](https://wit.wiimm.de/) so you don't need to install it) and
@@ -154,6 +154,17 @@ same patch logic as a standalone module (`static_patches()`/
 base DOL against the exact bytes these offsets were computed against before
 writing anything, so a foreign or already-patched dump fails loudly instead
 of silently corrupting.
+
+**This is not yet a from-scratch injector.** `static_patches()` writes into a
+fixed set of addresses (`POLLER_BODY_RAM` and, for `stash`, ten more inside
+codeA-D) that only exist because those five Gecko codes were already baked
+into the DOL by an earlier, undocumented process — the tool patches an
+*already-modified* build further, it doesn't inject the codehandler system
+into a genuinely clean retail dump. Point it at a clean `.wbfs` extracted
+straight from your own disc and `verify_patches()` will correctly refuse:
+`POLLER_BODY_RAM` isn't mapped there at all. Actually supporting a clean dump
+needs a new DOL segment, a codehandler-installer stub, and hook-table entries
+for codeA-D — none of that exists yet.
 
 ## Sources
 

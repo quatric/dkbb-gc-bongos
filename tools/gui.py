@@ -16,6 +16,11 @@ Two poller variants (see README for the tradeoff between them):
   stash              -- doesn't touch SIPOLL; stashes an immediate-transfer
                          response in RAM instead. Try this if autopoll
                          doesn't work on your console.
+
+Needs a dump where codeA-D and the poller are already baked into main.dol --
+see build.py's module docstring. A genuinely clean retail dump has none of
+that, and verify_patches() will correctly refuse it (POLLER_BODY_RAM isn't
+mapped there).
 """
 import os
 import queue
