@@ -79,6 +79,26 @@ instead of `base+0x6c`/`0x70`, and the float scratch landed at `base+0x168`,
 which is **inside the KPAD sample ring buffer** (it starts at `+0x110`). All of
 it is rebased, and the scratch moved onto codeC's own stack frame.
 
+**Motion isolation.** The moment the Classic Controller branch is entered, it
+zeroes six per-axis accelerometer scale factors at KPAD `+0x4dc`–`+0x4f0` —
+the same fields `zz_80245f98_` (this hook's containing function) multiplies
+the raw Wii Remote/Nunchuk delta by every frame, before this code even runs.
+Without it, physically moving the Wii Remote you're required to keep
+connected (see "What is mapped") would add its own spurious drum hits on top
+of the Classic Controller's.
+
+## No Nunchuk Required (opt-in)
+
+A second, independent Gecko code in the same file: seven call sites gate
+per-extension setup on `*(byte*)(param+0x5c) != 0`, i.e. some extension being
+physically connected. Patching each site's `cmpwi r0,0` to `cmpwi r0,-1`
+(a value the byte can never hold) makes that branch always taken, so a
+Classic Controller or GameCube pad works without a physical Nunchuk also
+being plugged into the Wii Remote. Ships as its own `$`-titled block —
+enable it separately from the main code in Dolphin's Gecko Codes list if you
+need it. `tools/nonunchuk.py` verifies all seven pre-images against the DOL
+before writing.
+
 ## What is mapped
 
 GameCube controller / DK Bongos:

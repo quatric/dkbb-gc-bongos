@@ -162,7 +162,7 @@ def main():
 
     cc = assemble(CC_ASM)
     print(f'  assembled {CC_ASM.split("/")[-1]}: {len(cc)} words')
-    assert len(cc) == 30, f'CC block is {len(cc)} words, expected 30'
+    assert cc[-2:] == [0x48000000, 0x48000000], 'CC block must end with the two placeholder exit branches'
 
     # new layout: [0..131] [b over_cc] [cc x30] [orig] [nop pad] [spare]
     jump_idx = 132
@@ -172,14 +172,17 @@ def main():
     body.append(branch(jump_idx, orig_idx))
     body += cc
     body.append(b[CODEB_ORIG_IDX])       # hooked instruction
-    body.append(0x60000000)              # pad to an even word count
+    if len(body) % 2 == 0:
+        body.append(0x60000000)          # pad to an even word count
     body.append(0x60000000)              # spare: handler overwrites with `b back`
 
     # patch the CC block's two exits
-    body[cc_idx + 28] = branch(cc_idx + 28, CODEB_COMMON)
-    body[cc_idx + 29] = branch(cc_idx + 29, CODEB_FANIN)
-    print(f'  [{cc_idx+28:3d}] b common  -> {body[cc_idx+28]:08X}')
-    print(f'  [{cc_idx+29:3d}] b gc_si   -> {body[cc_idx+29]:08X}')
+    exit_common = cc_idx + len(cc) - 2
+    exit_back = cc_idx + len(cc) - 1
+    body[exit_common] = branch(exit_common, CODEB_COMMON)
+    body[exit_back] = branch(exit_back, CODEB_FANIN)
+    print(f'  [{exit_common:3d}] b common  -> {body[exit_common]:08X}')
+    print(f'  [{exit_back:3d}] b gc_si   -> {body[exit_back]:08X}')
 
     # redirect the channel-detect fan-in through the CC check
     for idx in CODEB_ENTRY_BRANCHES:

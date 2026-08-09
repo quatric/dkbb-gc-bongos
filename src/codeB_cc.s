@@ -23,6 +23,20 @@
     cmpwi   9, 2                # 2 = Classic Controller
     bne     gc_back
 
+    # Neutralize the physical Wii Remote's own motion so it can't add
+    # spurious drum hits on top of the CC's. +0x4dc/+0x4e0/+0x4e4 and
+    # +0x4e8/+0x4ec/+0x4f0 are the per-axis accel scale factors this same
+    # function (zz_80245f98_, hooked at its return) multiplies the raw
+    # Wiimote/Nunchuk delta by every frame -- zeroing them zeroes the whole
+    # smoothed-accel pipeline at the source instead of fighting its output.
+    li      0, 0
+    stw     0, 0x4dc(30)
+    stw     0, 0x4e0(30)
+    stw     0, 0x4e4(30)
+    stw     0, 0x4e8(30)
+    stw     0, 0x4ec(30)
+    stw     0, 0x4f0(30)
+
     lwz     9, 0x60(30)         # CC button word
     li      6, 0
     andi.   0, 9, 0x204         # R | ZR
